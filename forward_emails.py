@@ -1,59 +1,92 @@
 import imaplib
 import smtplib
 import email
-from email.message import EmailMessage
 import os
+import ssl
 
-# Environment variables
-YAHOO_EMAIL = os.environ['YAHOO_EMAIL']
-YAHOO_APP_PASSWORD = os.environ['YAHOO_APP_PASSWORD']
-GMAIL_EMAIL = os.environ['GMAIL_EMAIL']
-GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
+# ==============================
+# CONFIG FROM ENV VARIABLES
+# ==============================
 
-# Connect to Yahoo IMAP
-imap = imaplib.IMAP4_SSL('imap.mail.yahoo.com')
-imap.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
-imap.select('INBOX')
+YAHOO_EMAIL = os.environ["YAHOO_EMAIL"]
+YAHOO_APP_PASSWORD = os.environ["YAHOO_APP_PASSWORD"]
+GMAIL_EMAIL = os.environ["GMAIL_EMAIL"]
 
-# Search for unread emails
-status, messages = imap.search(None, 'UNSEEN')
+IMAP_SERVER = "imap.mail.yahoo.com"
+SMTP_SERVER = "smtp.mail.yahoo.com"
+SMTP_PORT = 465  # SSL
+
+BATCH_LIMIT = 50  # prevent overload
+
+print("============================================================")
+print("Starting Yahoo → Gmail forwarder")
+print("============================================================")
+
+# ==============================
+# CONNECT TO YAHOO IMAP
+# ==============================
+
+mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+mail.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
+mail.select("INBOX")
+
+status, messages = mail.search(None, "UNSEEN")
 email_ids = messages[0].split()
 
-# Connect to Gmail SMTP
-smtp = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-smtp.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+total_unread = len(email_ids)
+print(f"Found {total_unread} unread emails")
+
+if total_unread == 0:
+    print("Nothing to forward.")
+    mail.logout()
+    exit()
+
+email_ids = email_ids[:BATCH_LIMIT]
+
+# ==============================
+# CONNECT TO YAHOO SMTP
+# ==============================
+
+context = ssl.create_default_context()
+smtp = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context)
+smtp.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
+
+forwarded = 0
+
+# ==============================
+# PROCESS EMAILS
+# ==============================
 
 for i, email_id in enumerate(email_ids, start=1):
-    status, msg_data = imap.fetch(email_id, '(RFC822)')
-    raw_email = msg_data[0][1]
-    original_msg = email.message_from_bytes(raw_email)
-
-    # Forward email
-    fwd_msg = EmailMessage()
-    fwd_msg['From'] = GMAIL_EMAIL
-    fwd_msg['To'] = GMAIL_EMAIL  # change if forwarding elsewhere
-    fwd_msg['Subject'] = f"FWD: {original_msg.get('Subject', '')}"
-
-    # Simply copy the raw payload
-    if original_msg.is_multipart():
-        fwd_msg.set_content("This is a forwarded multipart email. See attachment for full content.")
-        for part in original_msg.walk():
-            if part.get_content_maintype() == 'multipart':
-                continue
-            fwd_msg.add_attachment(part.get_payload(decode=True),
-                                   maintype=part.get_content_maintype(),
-                                   subtype=part.get_content_subtype(),
-                                   filename=part.get_filename())
-    else:
-        fwd_msg.set_content(original_msg.get_payload(decode=True), subtype='plain')
-
     try:
-        smtp.send_message(fwd_msg)
-        print(f"[{i}/{len(email_ids)}] Forwarded successfully")
-    except Exception as e:
-        print(f"[{i}/{len(email_ids)}] Failed to forward: {e}")
+        status, msg_data = mail.fetch(email_id, "(RFC822)")
+        raw_email = msg_data[0][1]
 
-# Close connections
-imap.logout()
+        original_msg = email.message_from_bytes(raw_email)
+
+        # Send raw email directly from Yahoo to Gmail
+        smtp.sendmail(
+            YAHOO_EMAIL,
+            GMAIL_EMAIL,
+            raw_email
+        )
+
+        # Mark as seen so it doesn't resend
+        mail.store(email_id, "+FLAGS", "\\Seen")
+
+        forwarded += 1
+        print(f"[{i}/{len(email_ids)}] Forwarded: {original_msg.get('Subject')}")
+
+    except Exception as e:
+        print(f"[{i}] Failed to forward:", e)
+
+# ==============================
+# CLEANUP
+# ==============================
+
 smtp.quit()
-print("Done forwarding all emails.")
+mail.logout()
+
+print("============================================================")
+print(f"Forwarded {forwarded} of {len(email_ids)} emails")
+print("============================================================")

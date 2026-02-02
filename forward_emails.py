@@ -79,4 +79,90 @@ def fetch_and_forward():
 
         total_unread = len(email_ids)
         email_ids_to_process = email_ids[:MAX_EMAILS_PER_RUN]
-        log(f"Found {total_u_
+        log(f"Found {total_unread} unread emails, processing {len(email_ids_to_process)}")
+
+        # Connect to SMTP
+        smtp = connect_smtp()
+
+        forwarded = 0
+        failed = 0
+
+        for i, num in enumerate(email_ids_to_process, 1):
+            try:
+                # Fetch the email
+                status, msg_data = mail.fetch(num, '(RFC822)')
+                original_email = email.message_from_bytes(msg_data[0][1])
+
+                # Build new EmailMessage for forwarding
+                fwd_email = EmailMessage()
+                fwd_email['From'] = YAHOO_EMAIL
+                fwd_email['To'] = GMAIL_EMAIL
+
+                # Sanitize subject
+                subject = sanitize_header(original_email.get('Subject', 'No Subject'))
+                fwd_email['Subject'] = subject
+
+                # Copy body (plain text + HTML) and attachments
+                if original_email.is_multipart():
+                    for part in original_email.walk():
+                        content_type = part.get_content_type()
+                        content_disposition = part.get("Content-Disposition", "")
+                        payload = part.get_payload(decode=True)
+                        charset = part.get_content_charset() or 'utf-8'
+                        if content_type == 'text/plain' and 'attachment' not in content_disposition:
+                            fwd_email.set_content(payload.decode(charset, errors='ignore'))
+                        elif content_type == 'text/html' and 'attachment' not in content_disposition:
+                            fwd_email.add_alternative(payload.decode(charset, errors='ignore'), subtype='html')
+                        elif 'attachment' in content_disposition:
+                            fwd_email.add_attachment(payload,
+                                                     maintype=part.get_content_maintype(),
+                                                     subtype=part.get_content_subtype(),
+                                                     filename=part.get_filename())
+                else:
+                    payload = original_email.get_payload(decode=True)
+                    charset = original_email.get_content_charset() or 'utf-8'
+                    fwd_email.set_content(payload.decode(charset, errors='ignore'))
+
+                # Send email, reconnect if disconnected
+                try:
+                    smtp.send_message(fwd_email)
+                except smtplib.SMTPServerDisconnected:
+                    log("SMTP disconnected, reconnecting...")
+                    smtp = connect_smtp()
+                    smtp.send_message(fwd_email)
+
+                # Mark original as read
+                mail.store(num, '+FLAGS', '\\Seen')
+
+                forwarded += 1
+                log(f"[{i}/{len(email_ids_to_process)}] Forwarded: {subject}")
+
+                if i < len(email_ids_to_process):
+                    time.sleep(DELAY_BETWEEN_EMAILS)
+
+            except Exception as e:
+                failed += 1
+                log(f"[{i}] Error forwarding email: {str(e)}")
+                continue
+
+        # Cleanup
+        try:
+            smtp.quit()
+        except smtplib.SMTPServerDisconnected:
+            log("SMTP already closed, continuing...")
+
+        mail.close()
+        mail.logout()
+
+        log("="*60)
+        log(f"Summary: Total unread: {total_unread}, Forwarded: {forwarded}, Failed: {failed}")
+        log("="*60)
+
+    except Exception as e:
+        import traceback
+        log(f"Unexpected error: {str(e)}")
+        log(traceback.format_exc())
+        sys.exit(1)
+
+if __name__ == "__main__":
+    fetch_and_forward()

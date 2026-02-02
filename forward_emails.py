@@ -19,7 +19,7 @@ GMAIL_SMTP_PORT = 587
 
 def fetch_unread_yahoo():
     mail = imaplib.IMAP4_SSL(YAHOO_IMAP)
-    mail.login(YAHOO_EMAIL, YAHOO_PASSWORD)
+    mail.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
     mail.select('INBOX')
     typ, data = mail.search(None, 'UNSEEN')
     mail_ids = data[0].split()

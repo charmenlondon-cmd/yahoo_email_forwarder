@@ -3,7 +3,6 @@ name: Forward Yahoo Emails to Gmail
 on:
   schedule:
     # Run every hour at minute 0
-    # Cron format: minute hour day month day-of-week
     - cron: '0 * * * *'
   
   # Allow manual triggering for testing
@@ -22,10 +21,9 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Run email forwarder
+      - name: Run robust Yahoo → Gmail forwarder
         env:
           YAHOO_EMAIL: ${{ secrets.YAHOO_EMAIL }}
           YAHOO_APP_PASSWORD: ${{ secrets.YAHOO_APP_PASSWORD }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
-          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python forward_emails.py

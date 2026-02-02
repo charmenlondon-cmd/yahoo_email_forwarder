@@ -1,82 +1,91 @@
 #!/usr/bin/env python3
+import os
 import imaplib
 import email
-from email.message import EmailMessage
 import smtplib
-import os
-import logging
+from email.message import EmailMessage
+from email.policy import default
 
-# -----------------------
-# CONFIGURATION
-# -----------------------
-YAHOO_EMAIL = os.environ.get("YAHOO_EMAIL")
-YAHOO_PASSWORD = os.environ.get("YAHOO_PASSWORD")
-GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+# Environment variables
+YAHOO_EMAIL = os.environ['YAHOO_EMAIL']
+YAHOO_PASSWORD = os.environ['YAHOO_PASSWORD']
+GMAIL_EMAIL = os.environ['GMAIL_EMAIL']
+GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
 
-if not all([YAHOO_EMAIL, YAHOO_PASSWORD, GMAIL_EMAIL, GMAIL_APP_PASSWORD]):
-    raise ValueError("Missing one or more environment variables: YAHOO_EMAIL, YAHOO_PASSWORD, GMAIL_EMAIL, GMAIL_APP_PASSWORD")
+# IMAP / SMTP settings
+YAHOO_IMAP = 'imap.mail.yahoo.com'
+GMAIL_SMTP = 'smtp.gmail.com'
+GMAIL_SMTP_PORT = 587
 
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s')
-
-# -----------------------
-# CONNECT TO YAHOO IMAP
-# -----------------------
-logging.info("Connecting to Yahoo IMAP...")
-imap = imaplib.IMAP4_SSL("imap.mail.yahoo.com")
-imap.login(YAHOO_EMAIL, YAHOO_PASSWORD)
-imap.select("INBOX")
-logging.info("✓ Connected to Yahoo IMAP")
-
-# -----------------------
-# CONNECT TO GMAIL SMTP
-# -----------------------
-logging.info("Connecting to Gmail SMTP...")
-smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-smtp.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
-logging.info("✓ Connected to Gmail SMTP")
-
-# -----------------------
-# FETCH UNREAD EMAILS
-# -----------------------
-status, messages = imap.search(None, "UNSEEN")
-email_ids = messages[0].split()
-logging.info(f"Found {len(email_ids)} unread; processing up to 50")
-email_ids = email_ids[:50]
-
-# -----------------------
-# FORWARD EMAILS
-# -----------------------
-for idx, e_id in enumerate(email_ids, start=1):
-    try:
-        _, msg_data = imap.fetch(e_id, "(RFC822)")
+def fetch_unread_yahoo():
+    mail = imaplib.IMAP4_SSL(YAHOO_IMAP)
+    mail.login(YAHOO_EMAIL, YAHOO_PASSWORD)
+    mail.select('INBOX')
+    typ, data = mail.search(None, 'UNSEEN')
+    mail_ids = data[0].split()
+    messages = []
+    for num in mail_ids:
+        typ, msg_data = mail.fetch(num, '(RFC822)')
         raw_email = msg_data[0][1]
-        original_msg = email.message_from_bytes(raw_email)
+        messages.append(email.message_from_bytes(raw_email, policy=default))
+    mail.logout()
+    return messages
 
-        # Create new message
-        fwd_msg = EmailMessage()
-        fwd_msg['Subject'] = "FWD: " + original_msg.get('Subject', '')
-        fwd_msg['From'] = GMAIL_EMAIL
-        fwd_msg['To'] = GMAIL_EMAIL  # Forwarding to yourself
-        fwd_msg['Reply-To'] = original_msg.get('From')
+def forward_to_gmail(original_msg):
+    fwd_msg = EmailMessage()
+    fwd_msg['Subject'] = original_msg['Subject']
+    fwd_msg['From'] = GMAIL_EMAIL
+    fwd_msg['To'] = GMAIL_EMAIL  # forward to self, adjust if needed
 
-        # Handle plain text and HTML
-        if original_msg.is_multipart():
-            for part in original_msg.walk():
-                content_type = part.get_content_type()
-                disposition = part.get_content_disposition()
-                charset = part.get_content_charset() or "utf-8"
+    if original_msg.is_multipart():
+        for part in original_msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = part.get_content_disposition()
+            charset = part.get_content_charset() or "utf-8"
+            payload = part.get_payload(decode=True)
 
-                if disposition == "attachment":
-                    fwd_msg.add_attachment(part.get_payload(decode=True),
-                                           maintype=part.get_content_maintype(),
-                                           subtype=part.get_content_subtype(),
-                                           filename=part.get_filename())
-                elif content_type == "text/plain":
-                    fwd_msg.set_content(part.get_payload(decode=True).decode(charset, errors='replace'))
-                elif content_type == "text/html":
-                    fwd_msg.add_alternative(part.get_payload(decode=True).decode(charset, errors='replace'), subtype='html')
-        else:
-            # Single part message
-            charset = original_msg.get_content_charset() or "utf-8"
-            fwd_msg.set_content(original_msg.get_payload(decode=True).decode(charset, errors='replace'))
+            if payload is None:
+                continue
+
+            if content_disposition == 'attachment':
+                fwd_msg.add_attachment(payload, maintype=part.get_content_maintype(),
+                                       subtype=part.get_content_subtype(),
+                                       filename=part.get_filename())
+            else:
+                if content_type == 'text/plain':
+                    fwd_msg.set_content(payload.decode(charset, errors='replace'))
+                elif content_type == 'text/html':
+                    fwd_msg.add_alternative(payload.decode(charset, errors='replace'), subtype='html')
+    else:
+        # Single part message
+        charset = original_msg.get_content_charset() or "utf-8"
+        fwd_msg.set_content(original_msg.get_payload(decode=True).decode(charset, errors='replace'))
+
+    # Send via Gmail SMTP
+    with smtplib.SMTP(GMAIL_SMTP, GMAIL_SMTP_PORT) as smtp:
+        smtp.starttls()
+        smtp.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+        smtp.send_message(fwd_msg)
+
+def main():
+    print("="*60)
+    print(f"Starting robust Yahoo → Gmail forwarder")
+    print(f"Yahoo: {YAHOO_EMAIL} → Gmail: {GMAIL_EMAIL}")
+    print("="*60)
+    messages = fetch_unread_yahoo()
+    print(f"Found {len(messages)} unread messages; processing all")
+    success, failed = 0, 0
+    for i, msg in enumerate(messages, 1):
+        try:
+            forward_to_gmail(msg)
+            print(f"[{i}/{len(messages)}] Forwarded successfully")
+            success += 1
+        except Exception as e:
+            print(f"[{i}/{len(messages)}] Error forwarding: {e}")
+            failed += 1
+    print("="*60)
+    print(f"Summary: Total unread: {len(messages)}, Forwarded: {success}, Failed: {failed}")
+    print("="*60)
+
+if __name__ == "__main__":
+    main()

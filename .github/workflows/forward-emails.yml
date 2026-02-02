@@ -26,4 +26,5 @@ jobs:
           YAHOO_EMAIL: ${{ secrets.YAHOO_EMAIL }}
           YAHOO_APP_PASSWORD: ${{ secrets.YAHOO_APP_PASSWORD }}
           GMAIL_EMAIL: ${{ secrets.GMAIL_EMAIL }}
+          GMAIL_APP_PASSWORD: ${{secrets.GMAIL_APP_PASSWORD}}
         run: python forward_emails.py

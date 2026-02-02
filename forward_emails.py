@@ -1,130 +1,125 @@
-#!/usr/bin/env python3
-
 import imaplib
 import smtplib
-import os
 import email
-from email.message import EmailMessage
-from datetime import datetime
+import os
 import time
-import sys
+from email.message import EmailMessage
+from email.header import decode_header, make_header
+from datetime import datetime
 
-YAHOO_EMAIL = os.environ.get("YAHOO_EMAIL")
-YAHOO_APP_PASSWORD = os.environ.get("YAHOO_APP_PASSWORD")
-GMAIL_EMAIL = os.environ.get("GMAIL_EMAIL")
+# =============================
+# CONFIG
+# =============================
+YAHOO_EMAIL = os.environ["YAHOO_EMAIL"]
+YAHOO_APP_PASSWORD = os.environ["YAHOO_APP_PASSWORD"]
+
+GMAIL_EMAIL = os.environ["GMAIL_EMAIL"]
 
 IMAP_SERVER = "imap.mail.yahoo.com"
 SMTP_SERVER = "smtp.mail.yahoo.com"
-SMTP_PORT = 465
+SMTP_PORT = 587
 
-MAX_PER_RUN = 50
-DELAY_BETWEEN_EMAILS = 2
+MAX_PER_RUN = 25  # keep safe to avoid limits
+SLEEP_BETWEEN = 2  # seconds
 
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 
-def validate():
-    if not YAHOO_EMAIL or not YAHOO_APP_PASSWORD or not GMAIL_EMAIL:
-        log("Missing required environment variables.")
-        sys.exit(1)
+def decode_subject(raw_subject):
+    if not raw_subject:
+        return "(No Subject)"
+    return str(make_header(decode_header(raw_subject)))
 
 
-def connect_imap():
-    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-    mail.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
-    mail.select("INBOX")
-    return mail
+# =============================
+# CONNECT IMAP
+# =============================
+log("=" * 60)
+log("Starting Yahoo → Gmail forwarder")
+log("=" * 60)
 
+imap = imaplib.IMAP4_SSL(IMAP_SERVER)
+imap.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
+imap.select("INBOX")
 
+status, messages = imap.search(None, "UNSEEN")
+email_ids = messages[0].split()
+
+log(f"Found {len(email_ids)} unread emails")
+
+if not email_ids:
+    log("No unread emails. Exiting.")
+    imap.logout()
+    exit()
+
+email_ids = email_ids[:MAX_PER_RUN]
+log(f"Processing {len(email_ids)} this run")
+
+# =============================
+# CONNECT SMTP
+# =============================
 def connect_smtp():
-    smtp = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+    smtp = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+    smtp.starttls()
     smtp.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
     return smtp
 
 
-def main():
-    validate()
+smtp = connect_smtp()
 
-    log("=" * 60)
-    log("Starting Yahoo → Gmail forwarder")
-    log("=" * 60)
-
-    mail = connect_imap()
-    smtp = connect_smtp()
-
-    status, data = mail.search(None, "UNSEEN")
-    email_ids = data[0].split()
-
-    if not email_ids:
-        log("No unread emails found.")
-        return
-
-    total = len(email_ids)
-    batch = email_ids[:MAX_PER_RUN]
-
-    log(f"Found {total} unread emails")
-    log(f"Processing {len(batch)} this run")
-
-    for i, eid in enumerate(batch, 1):
-        try:
-            status, msg_data = mail.fetch(eid, "(RFC822)")
-            raw_email = msg_data[0][1]
-            original_msg = email.message_from_bytes(raw_email)
-
-            original_subject = original_msg.get("Subject", "")
-            original_from = original_msg.get("From", "")
-
-            # Clean subject (remove newlines to avoid header errors)
-            clean_subject = original_subject.replace("\n", " ").replace("\r", " ")
-
-            fwd = EmailMessage()
-            fwd["From"] = YAHOO_EMAIL
-            fwd["To"] = GMAIL_EMAIL
-            fwd["Subject"] = f"FWD: {clean_subject}"
-
-            body = f"""Forwarded message:
-
-From: {original_from}
-Subject: {original_subject}
-
-Original email is attached as .eml file.
-"""
-
-            fwd.set_content(body)
-
-            # Attach original email safely
-            fwd.add_attachment(
-                raw_email,
-                maintype="message",
-                subtype="rfc822",
-                filename="original_message.eml"
-            )
-
-            smtp.send_message(fwd)
-
-            # Mark as read ONLY after successful send
-            mail.store(eid, "+FLAGS", "\\Seen")
-
-            log(f"[{i}/{len(batch)}] Forwarded: {clean_subject}")
-
-            time.sleep(DELAY_BETWEEN_EMAILS)
-
-        except Exception as e:
-            log(f"[{i}] Failed to forward: {e}")
-
+# =============================
+# PROCESS EMAILS
+# =============================
+for i, email_id in enumerate(email_ids, 1):
     try:
-        smtp.quit()
-    except:
-        pass
+        status, msg_data = imap.fetch(email_id, "(RFC822)")
+        raw_email = msg_data[0][1]
+        original_msg = email.message_from_bytes(raw_email)
 
-    mail.logout()
+        subject = decode_subject(original_msg.get("Subject"))
 
-    log("=" * 60)
-    log("Run complete.")
-    log("=" * 60)
+        # Build clean forward message
+        fwd = EmailMessage()
+        fwd["From"] = YAHOO_EMAIL
+        fwd["To"] = GMAIL_EMAIL
+        fwd["Subject"] = f"FWD: {subject}"
 
+        fwd.set_content(
+            f"This email was automatically forwarded from Yahoo.\n\n"
+            f"Original From: {original_msg.get('From')}\n"
+            f"Original Subject: {subject}\n\n"
+            f"The original message is attached."
+        )
 
-if __name__ == "__main__":
-    main()
+        # Attach original email intact
+        fwd.add_attachment(
+            raw_email,
+            maintype="message",
+            subtype="rfc822",
+            filename="original_email.eml",
+        )
+
+        smtp.send_message(fwd)
+
+        # Mark as seen ONLY after successful send
+        imap.store(email_id, "+FLAGS", "\\Seen")
+
+        log(f"[{i}/{len(email_ids)}] Forwarded: {subject}")
+
+        time.sleep(SLEEP_BETWEEN)
+
+    except smtplib.SMTPServerDisconnected:
+        log("SMTP disconnected. Reconnecting...")
+        smtp = connect_smtp()
+
+    except Exception as e:
+        log(f"[{i}] Failed to forward: {e}")
+
+log("=" * 60)
+log("Run complete.")
+log("=" * 60)
+
+smtp.quit()
+imap.logout()

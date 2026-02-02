@@ -8,7 +8,7 @@ from email.policy import default
 
 # Environment variables
 YAHOO_EMAIL = os.environ['YAHOO_EMAIL']
-YAHOO_PASSWORD = os.environ['YAHOO_PASSWORD']
+YAHOO_APP_PASSWORD = os.environ['YAHOO_APP_PASSWORD']
 GMAIL_EMAIL = os.environ['GMAIL_EMAIL']
 GMAIL_APP_PASSWORD = os.environ['GMAIL_APP_PASSWORD']
 

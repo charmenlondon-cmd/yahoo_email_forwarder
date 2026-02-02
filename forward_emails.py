@@ -79,4 +79,4 @@ for idx, e_id in enumerate(email_ids, start=1):
         else:
             # Single part message
             charset = original_msg.get_content_charset() or "utf-8"
-            fwd_msg.set_content(original_msg.get_payload(decode=True).de
+            fwd_msg.set_content(original_msg.get_payload(decode=True).decode(charset, errors='replace'))

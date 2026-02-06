@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""
+Yahoo to Gmail Email Forwarder
+Fetches unread emails from Yahoo and forwards them to Gmail.
+Designed to run hourly via GitHub Actions cron.
+"""
+
+import imaplib
+import email
+import smtplib
+import os
+import sys
+import time
+from datetime import datetime
+
+# Credentials from GitHub Secrets
+YAHOO_EMAIL = os.environ.get('YAHOO_EMAIL')
+YAHOO_APP_PASSWORD = os.environ.get('YAHOO_APP_PASSWORD')
+GMAIL_EMAIL = os.environ.get('GMAIL_EMAIL')
+GMAIL_APP_PASSWORD = os.environ.get('GMAIL_APP_PASSWORD')
+
+DELAY_BETWEEN_EMAILS = 1  # 1 second between forwards
+
+
+def log(message):
+    """Print log message with timestamp."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+
+
+def validate_credentials():
+    """Check that all required credentials are set."""
+    required = {
+        'YAHOO_EMAIL': YAHOO_EMAIL,
+        'YAHOO_APP_PASSWORD': YAHOO_APP_PASSWORD,
+        'GMAIL_EMAIL': GMAIL_EMAIL,
+        'GMAIL_APP_PASSWORD': GMAIL_APP_PASSWORD,
+    }
+    missing = [key for key, value in required.items() if not value]
+    if missing:
+        log(f"ERROR: Missing environment variables: {', '.join(missing)}")
+        sys.exit(1)
+
+
+def fetch_and_forward():
+    """Fetch unread emails from Yahoo and forward to Gmail."""
+    validate_credentials()
+
+    log("=" * 60)
+    log("Yahoo to Gmail forwarder - hourly check")
+    log(f"Yahoo: {YAHOO_EMAIL}")
+    log(f"Gmail: {GMAIL_EMAIL}")
+    log("=" * 60)
+
+    # Connect to Yahoo IMAP
+    log("Connecting to Yahoo IMAP...")
+    mail = imaplib.IMAP4_SSL("imap.mail.yahoo.com")
+    mail.login(YAHOO_EMAIL, YAHOO_APP_PASSWORD)
+    mail.select('inbox')
+    log("Connected to Yahoo")
+
+    # Search for unread emails
+    status, messages = mail.search(None, 'UNSEEN')
+    email_ids = messages[0].split()
+
+    if not email_ids:
+        log("No unread emails found")
+        mail.close()
+        mail.logout()
+        return
+
+    total = len(email_ids)
+    log(f"Found {total} unread email(s)")
+
+    # Connect to Gmail SMTP
+    log("Connecting to Gmail SMTP...")
+    smtp = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+    smtp.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+    log("Connected to Gmail")
+
+    forwarded = 0
+    failed = 0
+
+    for i, num in enumerate(email_ids, 1):
+        try:
+            status, msg_data = mail.fetch(num, '(RFC822)')
+            email_body = msg_data[0][1]
+            email_message = email.message_from_bytes(email_body)
+
+            subject = email_message.get('Subject', 'No Subject')
+            from_addr = email_message.get('From', 'Unknown')
+            if len(subject) > 60:
+                subject = subject[:57] + "..."
+
+            log(f"[{i}/{total}] From: {from_addr} | Subject: {subject}")
+
+            smtp.send_message(email_message, YAHOO_EMAIL, GMAIL_EMAIL)
+            mail.store(num, '+FLAGS', '\\Seen')
+            forwarded += 1
+            log(f"  Forwarded successfully")
+
+            if i < total:
+                time.sleep(DELAY_BETWEEN_EMAILS)
+
+        except Exception as e:
+            failed += 1
+            log(f"  Error: {str(e)}")
+
+    # Cleanup
+    smtp.quit()
+    mail.close()
+    mail.logout()
+
+    log("=" * 60)
+    log(f"Done: {forwarded} forwarded, {failed} failed out of {total}")
+    log("=" * 60)
+
+    if failed > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        fetch_and_forward()
+    except imaplib.IMAP4.error as e:
+        log(f"IMAP error: {e} - check Yahoo credentials")
+        sys.exit(1)
+    except smtplib.SMTPException as e:
+        log(f"SMTP error: {e} - check Gmail credentials")
+        sys.exit(1)
+    except Exception as e:
+        log(f"Unexpected error: {e}")
+        sys.exit(1)

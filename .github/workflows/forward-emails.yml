@@ -1,8 +1,6 @@
 name: Yahoo to Gmail Forwarder
 
 on:
-  schedule:
-    - cron: '0 * * * *'  # runs every hour, on the hour
   workflow_dispatch:      # allows manual runs
 
 jobs:
